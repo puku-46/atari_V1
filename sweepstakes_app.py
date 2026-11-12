@@ -3,6 +3,7 @@
 起動:  streamlit run sweepstakes_app.py
 必要:  pip install streamlit requests beautifulsoup4 pandas
 
+
 懸賞まとめサイトの一覧ページを取得し、タイトルから賞品ジャンルを自動判定して
 ジャンルで絞り込みます。
 ※ SITES のCSSセレクタは、実際のサイトのHTMLに合わせて調整してください。
