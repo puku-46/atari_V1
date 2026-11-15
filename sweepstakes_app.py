@@ -1,8 +1,8 @@
 """懸賞検索アプリ (Streamlit)
- 
+
 起動:  streamlit run sweepstakes_app.py
 必要:  pip install streamlit requests beautifulsoup4 pandas
- 
+
 複数の懸賞サイトを巡回して情報を集め、フリーワードで検索します。
 取得方法は2通り:
   1. RSS/Atomフィード(推奨): サイトのトップページURLを書くだけ。フィードは自動検出。
@@ -18,12 +18,12 @@ from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
- 
+
 import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
- 
+
 # ------------------------------------------------------------------
 # 設定
 # ------------------------------------------------------------------
@@ -31,7 +31,7 @@ USER_AGENT = "SweepstakesSearchBot/0.2 (personal use)"
 REQUEST_INTERVAL_SEC = 2.0  # 同じサイトへの連続アクセスの間隔
 TIMEOUT_SEC = 15
 MAX_FEEDS_PER_PAGE = 3  # 1ページから自動検出するフィードの最大数
- 
+
 # 取得先サイト一覧。ここに追加していきます。
 #
 # 【RSS/Atom方式】 type="auto"
@@ -43,11 +43,23 @@ MAX_FEEDS_PER_PAGE = 3  # 1ページから自動検出するフィードの最�
 #   title    : item内の、タイトル(リンク)要素のCSSセレクタ
 #   deadline : item内の締切表示のCSSセレクタ(無ければ None)
 SITES = {
-    # 例: 懸賞のつぼ(RSS配信の案内あり。現在も動いているかは取得ログで確認してください)
-    "懸賞のつぼ(例・要確認)": {
+    # 懸賞CLUB: WordPress製のサイト。WordPressは標準でRSSを配信しているため、取得できる可能性が高い
+    "懸賞CLUB": {
         "type": "auto",
-        "urls": ["https://www.tubox.com/"],
+        "urls": ["https://kenshou.club/"],
     },
+    # 懸賞生活: RSSがあるか未確認。取得ログに結果が出ます
+    "懸賞生活": {
+        "type": "auto",
+        "urls": ["https://www.knshow.com/"],
+    },
+    # Lucky Dip!: RSSがあるか未確認。無い場合はHTML解析方式での設定が必要です
+    "Lucky Dip!": {
+        "type": "auto",
+        "urls": ["https://lucky.jp/"],
+    },
+    # ※ 懸賞ナビ(kenshonavi.com)は、自動アクセスを禁止している様子だったため入れていません。
+    #
     # HTML解析方式の書き方の例(コメントを外して編集して使う)
     # "サイトB": {
     #     "type": "html",
@@ -57,22 +69,22 @@ SITES = {
     #     "deadline": ".deadline",
     # },
 }
- 
- 
+
+
 # ------------------------------------------------------------------
 # 検索ロジック
 # ------------------------------------------------------------------
 def normalize(text: str) -> str:
     """全角/半角・大文字/小文字の違いを吸収する(例: ＰＳ５ と PS5 を同じ扱いに)。"""
     return unicodedata.normalize("NFKC", text).casefold().strip()
- 
- 
+
+
 def split_words(query: str) -> list[str]:
     """スペース(全角含む)・カンマ区切りで複数語に分割。"""
     q = normalize(query).replace(",", " ").replace("、", " ")
     return [w for w in q.split() if w]
- 
- 
+
+
 def match_title(title: str, words: list[str], mode: str, logic: str) -> bool:
     t = normalize(title)
     if mode == "完全一致":
@@ -80,8 +92,8 @@ def match_title(title: str, words: list[str], mode: str, logic: str) -> bool:
     else:  # 部分一致
         hits = [w in t for w in words]
     return all(hits) if logic == "すべて含む(AND)" else any(hits)
- 
- 
+
+
 # ------------------------------------------------------------------
 # 取得・解析
 # ------------------------------------------------------------------
@@ -94,17 +106,17 @@ def _robots(base: str) -> RobotFileParser:
     except Exception:
         pass  # 取得できない場合は can_fetch が許可扱いになる
     return rp
- 
- 
+
+
 def allowed_by_robots(url: str) -> bool:
     p = urlparse(url)
     return _robots(f"{p.scheme}://{p.netloc}").can_fetch(USER_AGENT, url)
- 
- 
+
+
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
- 
- 
+
+
 def _fmt_date(raw: str) -> str:
     raw = (raw or "").strip()
     if not raw:
@@ -117,13 +129,13 @@ def _fmt_date(raw: str) -> str:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%Y-%m-%d")
     except Exception:
         return raw[:10]
- 
- 
+
+
 def looks_like_feed(content: bytes) -> bool:
     head = content[:500].lower()
     return any(m in head for m in (b"<rss", b"<feed", b"<rdf:rdf"))
- 
- 
+
+
 def parse_feed(content: bytes, site_name: str) -> list[dict]:
     """RSS 2.0 / RSS 1.0(RDF) / Atom に対応。"""
     root = ET.fromstring(content)
@@ -143,8 +155,8 @@ def parse_feed(content: bytes, site_name: str) -> list[dict]:
         if title and link:
             rows.append({"サイト": site_name, "タイトル": title, "掲載日": date, "締切": "", "URL": link})
     return rows
- 
- 
+
+
 def discover_feeds(html: str, base_url: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     urls = []
@@ -153,8 +165,8 @@ def discover_feeds(html: str, base_url: str) -> list[str]:
         if tag.get("href") and ("rss" in t or "atom" in t or "xml" in t):
             urls.append(urljoin(base_url, tag["href"]))
     return urls[:MAX_FEEDS_PER_PAGE]
- 
- 
+
+
 def parse_page(html: str, base_url: str, cfg: dict, site_name: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     rows = []
@@ -173,19 +185,19 @@ def parse_page(html: str, base_url: str, cfg: dict, site_name: str) -> list[dict
         rows.append({"サイト": site_name, "タイトル": title, "掲載日": "",
                      "締切": deadline, "URL": urljoin(base_url, href)})
     return rows
- 
- 
+
+
 def _get(url: str) -> requests.Response:
     res = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT_SEC)
     res.raise_for_status()
     return res
- 
- 
+
+
 def fetch_site_impl(site_name: str) -> tuple[list[dict], list[str]]:
     """1サイト分を取得。(結果, ログ) を返す。"""
     cfg = SITES[site_name]
     rows, msgs = [], []
- 
+
     def polite_get(url):
         if not allowed_by_robots(url):
             msgs.append(f"robots.txtで禁止されているためスキップ: {url}")
@@ -197,7 +209,7 @@ def fetch_site_impl(site_name: str) -> tuple[list[dict], list[str]]:
             return None
         time.sleep(REQUEST_INTERVAL_SEC)
         return res
- 
+
     for url in cfg["urls"]:
         res = polite_get(url)
         if res is None:
@@ -227,8 +239,8 @@ def fetch_site_impl(site_name: str) -> tuple[list[dict], list[str]]:
         except Exception as e:
             msgs.append(f"解析失敗 {url}: {e}")
     return rows, msgs
- 
- 
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_all(site_names: tuple[str, ...]) -> tuple[list[dict], list[str]]:
     """複数サイトを並列で取得(サイト間は並列、同一サイト内は順番)。1時間キャッシュ。"""
@@ -240,15 +252,15 @@ def fetch_all(site_names: tuple[str, ...]) -> tuple[list[dict], list[str]]:
             rows += r
             logs += [f"[{name}] {line}" for line in m]
     return rows, logs
- 
- 
+
+
 # ------------------------------------------------------------------
 # 画面
 # ------------------------------------------------------------------
 def main():
     st.set_page_config(page_title="懸賞検索", page_icon="🎁", layout="wide")
     st.title("🎁 懸賞検索")
- 
+
     with st.sidebar:
         st.header("検索条件")
         query = st.text_input("フリーワード", placeholder="例: 旅行 ペア  /  PS5")
@@ -260,12 +272,12 @@ def main():
         sites = st.multiselect("巡回するサイト", list(SITES), default=list(SITES))
         if st.button("最新情報を再取得"):
             fetch_all.clear()
- 
+
     with st.spinner(f"{len(sites)} サイトを巡回中..."):
         all_rows, logs = fetch_all(tuple(sites))
- 
+
     df = pd.DataFrame(all_rows)
- 
+
     if df.empty:
         st.warning("懸賞情報を取得できませんでした。下の取得ログを確認してください。")
     else:
@@ -280,7 +292,7 @@ def main():
             st.caption(f"{len(sites)} サイト・{total} 件中 {len(df)} 件が一致")
         else:
             st.caption(f"{len(sites)} サイト・{total} 件(フリーワードを入力すると絞り込めます)")
- 
+
         df = df.sort_values("掲載日", ascending=False)
         st.dataframe(
             df,
@@ -294,12 +306,11 @@ def main():
             file_name="kensho.csv",
             mime="text/csv",
         )
- 
+
     with st.expander("取得ログ(サイトごとの取得結果)", expanded=df.empty):
         for line in logs:
             st.write(line)
- 
- 
+
+
 if __name__ == "__main__":
     main()
- 
