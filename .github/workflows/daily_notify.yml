@@ -1,0 +1,40 @@
+name: daily-notify
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 毎日 日本時間の朝8:00(UTCの23:00)。数分〜数十分遅れることがあります
+  workflow_dispatch:        # 手動実行(Actionsタブの「Run workflow」)
+    inputs:
+      test:
+        description: "テスト通知だけ送る(true / false)"
+        default: "false"
+
+permissions:
+  contents: write           # 通知済みの記録(seen.json)を保存するため
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install requests beautifulsoup4
+
+      - name: Run notifier
+        env:
+          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
+          GOOGLE_ALERT_FEEDS: ${{ secrets.GOOGLE_ALERT_FEEDS }}
+          NOTIFY_TEST: ${{ github.event.inputs.test }}
+        run: python notify.py
+
+      - name: Save seen list
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f seen.json ]; then git add seen.json; fi
+          git diff --cached --quiet || (git commit -m "update seen.json" && git push)
