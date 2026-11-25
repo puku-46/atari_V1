@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 import pandas as pd
@@ -42,6 +42,7 @@ SUMMARY_LEN = 140  # 一覧に表示する概要の最大文字数
 #   urls       : サイトのトップページ(またはフィードのURLそのもの)。フィードは自動検出します。
 #   feed_pages : (省略可) WordPress系サイトで、古い分も何ページ分か取得する(?paged=2,3...)。
 #                RSSには最新の数件しか入っていないことが多いため。省略すると1ページのみ。
+#   ignore_robots : (省略可) True にすると robots.txt の確認を省く。自分専用のGoogleアラートRSS用。
 #
 # 【HTML解析方式】 type="html"  ※RSSが無いサイト用
 #   urls     : 一覧ページのURL(複数可)
@@ -72,6 +73,23 @@ SITES = {
     #     "deadline": ".deadline",
     # },
 }
+
+
+def _load_alert_sites() -> dict:
+    """GoogleアラートのRSS URLを、Streamlitの Secrets(google_alert_feeds)から読み込む。
+    URLは本人専用なので、公開されるコードには直接書かず Secrets に置きます。"""
+    try:
+        urls = st.secrets.get("google_alert_feeds", [])
+        if isinstance(urls, str):
+            urls = [urls]
+        urls = [str(u).strip() for u in urls if str(u).strip()]
+    except Exception:
+        return {}
+    return {f"Googleアラート{i}": {"type": "auto", "urls": [u], "ignore_robots": True}
+            for i, u in enumerate(urls, 1)}
+
+
+SITES.update(_load_alert_sites())
 
 
 # ------------------------------------------------------------------
@@ -135,16 +153,38 @@ def clean_summary(raw_html: str) -> str:
     """概要(HTML)から文字だけを取り出し、定型文を除いて短くする。"""
     if not raw_html:
         return ""
-    text = BeautifulSoup(raw_html, "html.parser").get_text(" ", strip=True)
+    raw_html = re.sub(r"</p>|<br\s*/?>", " ", raw_html, flags=re.I)  # 段落・改行は空白に
+    text = BeautifulSoup(raw_html, "html.parser").get_text("")  # <b>などの装飾タグは詰める
     text = re.sub(r"\s*The post .* first appeared on .*$", "", text, flags=re.S)
     text = text.replace("[…]", "…").replace("[&#8230;]", "…")
     text = re.sub(r"\s+", " ", text).strip()
     return text if len(text) <= SUMMARY_LEN else text[:SUMMARY_LEN] + "…"
 
 
+def clean_text(text: str) -> str:
+    """タイトルに混ざるHTMLタグ(<b>など)や文字参照を取り除く。"""
+    if "<" in text or "&" in text:
+        text = BeautifulSoup(text, "html.parser").get_text("")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def unwrap_redirect(url: str) -> str:
+    """Googleアラートの転送用URL(google.com/url?...&url=本当のURL)を、本当のURLに戻す。"""
+    try:
+        p = urlparse(url)
+        if p.netloc.endswith("google.com") and p.path == "/url":
+            q = parse_qs(p.query)
+            for key in ("url", "q"):
+                if q.get(key):
+                    return q[key][0]
+    except Exception:
+        pass
+    return url
+
+
 def make_row(site: str, title: str, date: str, summary_html: str, url: str, deadline: str = "") -> dict:
-    return {"サイト": site, "タイトル": title, "掲載日": date, "締切": deadline,
-            "概要": clean_summary(summary_html), "URL": url}
+    return {"サイト": site, "タイトル": clean_text(title), "掲載日": date, "締切": deadline,
+            "概要": clean_summary(summary_html), "URL": unwrap_redirect(url)}
 
 
 def looks_like_feed(content: bytes) -> bool:
@@ -267,7 +307,7 @@ def fetch_site_impl(site_name: str) -> tuple[list[dict], list[str]]:
     pages = max(1, int(cfg.get("feed_pages", 1)))
 
     def polite_get(url):
-        if not allowed_by_robots(url):
+        if not cfg.get("ignore_robots") and not allowed_by_robots(url):
             msgs.append(f"robots.txtで禁止されているためスキップ: {url}")
             return None
         try:
