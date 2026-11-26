@@ -202,14 +202,19 @@ def parse_feed_strict(content: bytes, site_name: str) -> list[dict]:
 
 
 def _decode_bytes(b: bytes) -> str:
-    m = re.search(rb"encoding=[\"']([\w\-]+)[\"']", b[:200])
-    encs = ([m.group(1).decode("ascii", "ignore")] if m else []) + ["utf-8", "cp932"]
-    for enc in encs:
-        try:
-            return b.decode(enc)
-        except Exception:
-            continue
-    return b.decode("utf-8", errors="replace")
+    """タグの区切りごとに UTF-8 → Shift_JIS(cp932) の順で読む。
+    1つのファイルにUTF-8とShift_JISが混ざっているフィードでも、文字化けしないようにするため。"""
+    out = []
+    for piece in b.split(b">"):  # ">" は UTF-8 / Shift_JIS のどちらの2バイト目以降にも現れない
+        for enc in ("utf-8", "cp932"):
+            try:
+                out.append(piece.decode(enc))
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            out.append(piece.decode("utf-8", errors="replace"))
+    return ">".join(out)
 
 
 def _rx_tag(block: str, name: str) -> str:
