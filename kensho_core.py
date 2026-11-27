@@ -201,20 +201,44 @@ def parse_feed_strict(content: bytes, site_name: str) -> list[dict]:
     return rows
 
 
-def _decode_bytes(b: bytes) -> str:
-    """タグの区切りごとに UTF-8 → Shift_JIS(cp932) の順で読む。
-    1つのファイルにUTF-8とShift_JISが混ざっているフィードでも、文字化けしないようにするため。"""
-    out = []
-    for piece in b.split(b">"):  # ">" は UTF-8 / Shift_JIS のどちらの2バイト目以降にも現れない
-        for enc in ("utf-8", "cp932"):
-            try:
-                out.append(piece.decode(enc))
-                break
-            except UnicodeDecodeError:
-                continue
+def _plausibility(text: str) -> float:
+    """日本語として自然な文字が多いほど高い点を返す(文字コードの当てはめの判定用)。"""
+    if not text:
+        return 0.0
+    score = 0.0
+    for ch in text:
+        o = ord(ch)
+        if ch == "\ufffd":
+            score -= 3
+        elif o < 0x80:
+            score += 1
+        elif 0x3040 <= o <= 0x30FF:        # ひらがな・カタカナ・和文の記号
+            score += 1.5
+        elif 0x4E00 <= o <= 0x9FFF:        # 漢字(誤った文字コードでも出やすいので控えめ)
+            score += 0.5
+        elif 0xFF01 <= o <= 0xFF5E or 0x2000 <= o <= 0x27FF:  # 全角英数・記号
+            score += 1
+        elif 0xFF61 <= o <= 0xFF9F:        # 半角カナ(文字化けで出やすい)
+            score -= 2
         else:
-            out.append(piece.decode("utf-8", errors="replace"))
-    return ">".join(out)
+            score -= 1
+    return score / len(text)
+
+
+def _decode_piece(piece: bytes) -> str:
+    try:
+        return piece.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # UTF-8でなければ、Shift_JIS系(cp932)かEUC-JPのうち、日本語として自然に読めるほうを採用する
+    return max((piece.decode(enc, errors="replace") for enc in ("cp932", "euc_jp")), key=_plausibility)
+
+
+def _decode_bytes(b: bytes) -> str:
+    """タグの区切りごとに文字コードを判定して読む。
+    1つのファイルにUTF-8・Shift_JIS・EUC-JPが混ざっているフィードでも、文字化けしないようにするため。"""
+    # ">" は UTF-8 / Shift_JIS / EUC-JP のどの2バイト目以降にも現れないので、安全な区切りになる
+    return ">".join(_decode_piece(piece) for piece in b.split(b">"))
 
 
 def _rx_tag(block: str, name: str) -> str:
